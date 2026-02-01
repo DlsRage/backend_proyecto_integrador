@@ -1,0 +1,12 @@
+fastapi
+uvicorn[standard]
+python-multipart
+numpy
+opencv-python
+scikit-learn
+scikit-image
+pillow
+boto3
+sse-starlette
+pydantic
+pydantic-settings
