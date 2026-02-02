@@ -6,8 +6,8 @@ class Settings(BaseSettings):
 
     # Object storage (DigitalOcean Spaces - S3 compatible)
     USE_SPACES: bool = True
-    SPACES_REGION: str = "nyc3"
-    SPACES_ENDPOINT: str = "https://imagenes-proyecto.nyc3.digitaloceanspaces.com"
+    SPACES_REGION: str = "NYC3"
+    SPACES_ENDPOINT: str = 'https://nyc3.digitaloceanspaces.com'
     SPACES_BUCKET: str = "imagenes-proyecto"
     SPACES_KEY: str = "DO8012KLZA9PEWTVRQA3"
     SPACES_SECRET: str = "8+xFL9e4KlZeI3gsVjarz8jnT62FxSyMfE8EbkgSY5w"

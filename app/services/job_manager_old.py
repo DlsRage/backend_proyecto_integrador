@@ -85,15 +85,18 @@ class JobManager:
                 random_state=settings.RANDOM_SEED,
             )
 
+            # buffers
+            all_labels: Dict[str, int] = {}
+
             keys = job.image_keys
             total = len(keys)
             if total == 0:
                 raise RuntimeError("no_images_registered")
 
-            await self.bus.publish(job_id, {"type": "phase", "name": "feature_extraction"})
+            await self.bus.publish(job_id, {"type": "phase", "name": "clustering"})
 
-            # Recolectar todas las características primero
-            all_feats = []
+            batch_feats = []
+            batch_keys = []
 
             for idx, key in enumerate(keys, start=1):
                 # 1) descargar bytes
@@ -102,26 +105,33 @@ class JobManager:
                 # 2) decode + preprocess + features (CPU) en thread
                 feat = await asyncio.to_thread(self._extract_one, img_bytes, extractor)
 
-                all_feats.append(feat)
+                batch_feats.append(feat)
+                batch_keys.append(key)
 
-                # Reportar progreso de extracción
-                await self.bus.publish(job_id, {
-                    "type": "progress",
-                    "done": idx,
-                    "total": total,
-                    "pct": round(100 * idx / total, 2),
-                    "phase": "feature_extraction"
-                })
+                # micro-lote lleno => partial_fit + predict + evento
+                if len(batch_feats) >= settings.MAX_IN_FLIGHT_IMAGES or idx == total:
+                    X = np.vstack(batch_feats)
+                    clusterer.partial_fit(X)
+                    labels = clusterer.predict(X)
 
-            # Ejecutar clustering sobre todas las características
-            await self.bus.publish(job_id, {"type": "phase", "name": "clustering"})
-            X = np.vstack(all_feats)
-            labels = clusterer.fit_predict(X)
+                    for k, lab in zip(batch_keys, labels):
+                        all_labels[k] = int(lab)
 
-            # Guardar resultados
-            all_labels: Dict[str, int] = {}
-            for k, lab in zip(keys, labels):
-                all_labels[k] = int(lab)
+                    await self.bus.publish(job_id, {
+                        "type": "progress",
+                        "done": idx,
+                        "total": total,
+                        "pct": round(100 * idx / total, 2),
+                        "partial": True,
+                    })
+
+                    # Evento “live” para el front (labels parciales del micro-lote)
+                    await self.bus.publish(job_id, {
+                        "type": "labels",
+                        "items": [{"key": k, "label": int(l)} for k, l in zip(batch_keys, labels)],
+                    })
+
+                    batch_feats, batch_keys = [], []
 
             job.result = {
                 "n_clusters": job.n_clusters,

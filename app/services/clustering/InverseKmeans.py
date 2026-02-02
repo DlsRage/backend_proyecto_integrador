@@ -1,3 +1,6 @@
+from app.services.clustering.base import BaseOnlineClustering
+import numpy as np
+
 class OnlineInverseWeightedKMeans(BaseOnlineClustering):
     def __init__(self, p=2, **kwargs):
         super().__init__(**kwargs)
