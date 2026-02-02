@@ -3,6 +3,10 @@ import numpy as np
 
 class FeatureExtractor(ABC):
     @abstractmethod
-    def extract(self, image_bgr) -> np.ndarray:
-        """Return 1D float vector."""
+    def extract(self, views: dict) -> np.ndarray:
+        """Return 1D float vector.
+        
+        Args:
+            views: Dict con vistas preprocesadas (canon_bgr, gray, edges)
+        """
         raise NotImplementedError

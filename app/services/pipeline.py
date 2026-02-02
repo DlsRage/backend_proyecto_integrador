@@ -4,6 +4,10 @@ from PIL import Image
 import io
 
 from app.services.feature_extractors.base import FeatureExtractor
+from app.services.preprocessing import UniversalPreprocessPipeline
+
+# Instancia global del preprocesador
+_preprocessor = UniversalPreprocessPipeline(out_size=(256, 256))
 
 def decode_image_to_bgr(image_bytes: bytes) -> np.ndarray:
     # PIL -> RGB -> OpenCV BGR
@@ -11,10 +15,14 @@ def decode_image_to_bgr(image_bytes: bytes) -> np.ndarray:
     arr = np.array(img)
     return arr[:, :, ::-1].copy()
 
-def preprocess(image_bgr: np.ndarray) -> np.ndarray:
-    # Aquí metes tu “limpieza de ruido” real.
-    # Demo: resize para control de RAM/tiempo.
-    return cv2.resize(image_bgr, (256, 256), interpolation=cv2.INTER_AREA)
+def preprocess(image_bgr: np.ndarray) -> dict:
+    """
+    Preprocesa la imagen y devuelve vistas múltiples.
+    Retorna dict con: canon_bgr, gray, edges
+    """
+    views = _preprocessor.preprocess(image_bgr)
+    return views
 
-def extract_features(image_bgr: np.ndarray, extractor: FeatureExtractor) -> np.ndarray:
-    return extractor.extract(image_bgr)
+def extract_features(views: dict, extractor: FeatureExtractor) -> np.ndarray:
+    """Extrae características usando las vistas preprocesadas."""
+    return extractor.extract(views)

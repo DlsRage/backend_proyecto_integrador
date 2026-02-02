@@ -3,9 +3,11 @@ import cv2
 from app.services.feature_extractors.base import FeatureExtractor
 
 class MomentsExtractor(FeatureExtractor):
-    def extract(self, image_bgr) -> np.ndarray:
-        gray = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2GRAY)
-        m = cv2.moments(gray)
+    def extract(self, views: dict) -> np.ndarray:
+        """Extrae momentos de la vista de bordes preprocesada."""
+        # Usa la vista 'edges' o 'gray' según prefieras
+        edges = views["edges"]
+        m = cv2.moments(edges)
         # vector fijo (ordenado) para estabilidad
         keys = ["m00","m10","m01","m20","m11","m02","m30","m21","m12","m03",
                 "mu20","mu11","mu02","mu30","mu21","mu12","mu03",

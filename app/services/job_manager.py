@@ -26,6 +26,7 @@ class Job:
     auto_delete: bool = True
     extractor: str = "hog"   # hog | sift | moments (embedding lo agregas)
     n_clusters: int = 3
+    mode: str = "batch"  # batch | incremental
 
 class JobManager:
     def __init__(self) -> None:
@@ -33,7 +34,16 @@ class JobManager:
         self.bus = JobEventBus()
         self.storage = StorageService()
 
-    def create_job(self, extractor: str, n_clusters: int, auto_delete: bool) -> Job:
+    def create_job(self, extractor: str, n_clusters: int, auto_delete: bool, mode: str = "batch") -> Job:
+        """
+        Crea un nuevo job.
+        
+        Args:
+            extractor: Tipo de extractor (hog, sift, moments)
+            n_clusters: Número de clusters
+            auto_delete: Si se borran las imágenes después
+            mode: 'batch' (extrae todo, luego clustering) o 'incremental' (clustering progresivo)
+        """
         job_id = str(uuid.uuid4())
         job = Job(
             id=job_id,
@@ -41,6 +51,7 @@ class JobManager:
             extractor=extractor,
             n_clusters=n_clusters,
             auto_delete=auto_delete,
+            mode=mode,
         )
         self.jobs[job_id] = job
         self.bus.ensure(job_id)
@@ -77,6 +88,19 @@ class JobManager:
         raise ValueError("unknown_extractor")
 
     async def _run_job(self, job_id: str) -> None:
+        """Ejecuta el job según el modo especificado."""
+        job = self.get_job(job_id)
+        
+        if job.mode == "incremental":
+            await self._run_job_incremental(job_id)
+        else:
+            await self._run_job_batch(job_id)
+
+    async def _run_job_batch(self, job_id: str) -> None:
+        """
+        Modo batch: Extrae todas las características primero, luego hace clustering.
+        Más estable y reproducible.
+        """
         job = self.get_job(job_id)
         try:
             extractor = self._make_extractor(job.extractor)
@@ -127,6 +151,90 @@ class JobManager:
                 "n_clusters": job.n_clusters,
                 "extractor": job.extractor,
                 "labels": all_labels,  # key -> cluster
+                "mode": "batch",
+            }
+            job.status = "done"
+            await self.bus.publish(job_id, {"type": "status", "status": "done"})
+
+            if job.auto_delete:
+                # cleanup storage (demo)
+                for k in keys:
+                    await asyncio.to_thread(self.storage.delete_object, k)
+
+        except Exception as e:
+            import traceback
+            error_msg = f"{type(e).__name__}: {str(e)}"
+            print(f"❌ Error en job {job_id}: {error_msg}")
+            print(traceback.format_exc())
+            job.status = "failed"
+            await self.bus.publish(job_id, {"type": "status", "status": "failed", "error": error_msg})
+
+    async def _run_job_incremental(self, job_id: str) -> None:
+        """
+        Modo incremental: Clustering progresivo con micro-lotes.
+        Útil para datasets grandes con feedback en tiempo real.
+        """
+        job = self.get_job(job_id)
+        try:
+            extractor = self._make_extractor(job.extractor)
+            clusterer = OnlineInverseWeightedKMeans(
+                n_clusters=job.n_clusters,
+                random_state=settings.RANDOM_SEED,
+            )
+
+            # buffers
+            all_labels: Dict[str, int] = {}
+
+            keys = job.image_keys
+            total = len(keys)
+            if total == 0:
+                raise RuntimeError("no_images_registered")
+
+            await self.bus.publish(job_id, {"type": "phase", "name": "clustering"})
+
+            batch_feats = []
+            batch_keys = []
+
+            for idx, key in enumerate(keys, start=1):
+                # 1) descargar bytes
+                img_bytes = await asyncio.to_thread(self.storage.get_object_bytes, key)
+
+                # 2) decode + preprocess + features (CPU) en thread
+                feat = await asyncio.to_thread(self._extract_one, img_bytes, extractor)
+
+                batch_feats.append(feat)
+                batch_keys.append(key)
+
+                # micro-lote lleno => partial_fit + predict + evento
+                if len(batch_feats) >= settings.MAX_IN_FLIGHT_IMAGES or idx == total:
+                    X = np.vstack(batch_feats)
+                    clusterer.partial_fit(X)
+                    labels = clusterer.predict(X)
+
+                    for k, lab in zip(batch_keys, labels):
+                        all_labels[k] = int(lab)
+
+                    await self.bus.publish(job_id, {
+                        "type": "progress",
+                        "done": idx,
+                        "total": total,
+                        "pct": round(100 * idx / total, 2),
+                        "partial": True,
+                    })
+
+                    # Evento "live" para el front (labels parciales del micro-lote)
+                    await self.bus.publish(job_id, {
+                        "type": "labels",
+                        "items": [{"key": k, "label": int(l)} for k, l in zip(batch_keys, labels)],
+                    })
+
+                    batch_feats, batch_keys = [], []
+
+            job.result = {
+                "n_clusters": job.n_clusters,
+                "extractor": job.extractor,
+                "labels": all_labels,  # key -> cluster
+                "mode": "incremental",
             }
             job.status = "done"
             await self.bus.publish(job_id, {"type": "status", "status": "done"})
@@ -146,8 +254,8 @@ class JobManager:
 
     def _extract_one(self, img_bytes: bytes, extractor) -> np.ndarray:
         img_bgr = decode_image_to_bgr(img_bytes)
-        img_bgr = preprocess(img_bgr)
-        feat = extract_features(img_bgr, extractor)
+        views = preprocess(img_bgr)
+        feat = extract_features(views, extractor)
         # normaliza para estabilidad numérica
         feat = feat.astype(np.float32)
         denom = (np.linalg.norm(feat) + 1e-8)
