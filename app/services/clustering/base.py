@@ -1,7 +1,8 @@
 import numpy as np
 
+
 class BaseOnlineClustering:
-    def __init__(self, n_clusters=3, learning_rate=0.01, epochs=20, random_state=None):
+    def __init__(self, n_clusters=3, learning_rate=0.01, epochs=1, random_state=None):
         self.k = n_clusters
         self.lr = learning_rate
         self.epochs = epochs

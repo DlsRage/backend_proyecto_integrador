@@ -7,6 +7,9 @@ router = APIRouter()
 class JobCreateIn(BaseModel):
     extractor: str = "hog"
     n_clusters: int = 3
+    learning_rate: float = 0.01
+    p: int = 2
+    random_state: int | None = None
     auto_delete: bool = True
 
 class RegisterIn(BaseModel):
@@ -15,7 +18,14 @@ class RegisterIn(BaseModel):
 @router.post("/jobs")
 async def create_job(payload: JobCreateIn, request: Request):
     jm = request.app.state.job_manager
-    job = jm.create_job(payload.extractor, payload.n_clusters, payload.auto_delete)
+    job = jm.create_job(
+        extractor=payload.extractor,
+        n_clusters=payload.n_clusters,
+        learning_rate=payload.learning_rate,
+        p=payload.p,
+        random_state=payload.random_state,
+        auto_delete=payload.auto_delete
+    )
     return {"job_id": job.id, "status": job.status}
 
 @router.post("/jobs/{job_id}/register")

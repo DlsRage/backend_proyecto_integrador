@@ -7,8 +7,9 @@ class SIFTExtractor(FeatureExtractor):
         self.sift = cv2.SIFT_create()
         self.max_kp = max_kp
 
-    def extract(self, image_bgr) -> np.ndarray:
-        gray = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2GRAY)
+    def extract(self, views: dict) -> np.ndarray:
+        """Extrae descriptores SIFT de la vista gray preprocesada."""
+        gray = views["gray"]
         kps, desc = self.sift.detectAndCompute(gray, None)
         if desc is None:
             return np.zeros((self.max_kp * 128,), dtype=np.float32)
