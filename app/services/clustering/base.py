@@ -1,4 +1,5 @@
 import numpy as np
+from sklearn.decomposition import PCA
 
 
 class BaseOnlineClustering:
@@ -23,6 +24,16 @@ class BaseOnlineClustering:
                 self._update_step(X[i])
 
         return self._assign_labels(X)
+
+    def get_centroids_2d(self):
+        if self.centroids is None:
+            return None
+
+        if self.centroids.shape[0] < 2:
+            return self.centroids  # no se puede PCA con 1 punto
+
+        pca = PCA(n_components=2)
+        return pca.fit_transform(self.centroids)
 
     def _assign_labels(self, X):
         labels = []
