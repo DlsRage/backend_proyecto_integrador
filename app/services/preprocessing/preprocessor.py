@@ -1,212 +1,165 @@
+"""
+Preprocesador Universal v3
+- Letterbox resize
+- CLAHE
+- Gamma automático
+- Segmentación adaptativa (green screen + Otsu)
+"""
+
 import cv2
 import numpy as np
 
 
-class ImagePreprocessor:
+class UniversalPreprocessPipeline:
     """
-    Preprocesador universal (sin parámetros del usuario).
-    Produce múltiples vistas para soportar diferentes extractores:
-      - canon_bgr: embeddings / modelos que usan 3 canales
-      - gray: HOG, SIFT/ORB, etc.
-      - edges: momentos de forma / HOG robusto / contornos
+    Preprocesador universal para clustering de imágenes.
+    Genera vistas múltiples: canon_bgr, gray, mask
     """
-
+    
     def __init__(self, out_size=(256, 256)):
-        self.out_size = out_size  # (width, height)
-
-    # -------------------------
-    # Helpers básicos
-    # -------------------------
-
-    @staticmethod
-    def _to_uint8(img):
-        if img is None:
-            return None
-        if img.dtype == np.uint8:
-            return img
-        return np.clip(img, 0, 255).astype(np.uint8)
+        self.out_size = out_size
 
     @staticmethod
     def _to_bgr(img):
         if img is None:
             return None
-        img = ImagePreprocessor._to_uint8(img)
+        if img.dtype != np.uint8:
+            img = np.clip(img, 0, 255).astype(np.uint8)
         if len(img.shape) == 2:
             return cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+        if img.shape[2] == 4:
+            return cv2.cvtColor(img, cv2.COLOR_RGBA2BGR)
         return img
 
     @staticmethod
     def _to_gray(bgr):
-        if bgr is None:
-            return None
         if len(bgr.shape) == 2:
             return bgr
         return cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
 
-    # -------------------------
-    # Canonical resize (sin distorsión)
-    # -------------------------
-
     @staticmethod
     def letterbox_resize(img_bgr, out_size=(256, 256), pad_value=127):
-        """
-        Resize general SIN distorsión: mantiene aspecto y rellena.
-        out_size = (width, height)
-        """
-        if img_bgr is None:
-            return None
-
+        """Redimensiona manteniendo proporción, con padding."""
         out_w, out_h = out_size
         h, w = img_bgr.shape[:2]
-
         scale = min(out_w / w, out_h / h)
-        nw, nh = int(round(w * scale)), int(round(h * scale))
-
-        interp = cv2.INTER_AREA if scale < 1 else cv2.INTER_CUBIC
-        resized = cv2.resize(img_bgr, (nw, nh), interpolation=interp)
-
+        nw, nh = int(w * scale), int(h * scale)
+        resized = cv2.resize(img_bgr, (nw, nh))
         canvas = np.full((out_h, out_w, 3), pad_value, dtype=np.uint8)
-        x0 = (out_w - nw) // 2
-        y0 = (out_h - nh) // 2
-        canvas[y0:y0 + nh, x0:x0 + nw] = resized
+        x0, y0 = (out_w - nw) // 2, (out_h - nh) // 2
+        canvas[y0:y0+nh, x0:x0+nw] = resized
         return canvas
 
-    # -------------------------
-    # Normalización automática
-    # -------------------------
-
     @staticmethod
-    def clahe_on_l_channel(img_bgr, clip=2.0, grid=(8, 8)):
-        """
-        CLAHE en canal L de LAB: mejora contraste sin destruir colores.
-        """
-        if img_bgr is None:
-            return None
+    def clahe_bgr(img_bgr):
+        """Aplica CLAHE en canal L (LAB)."""
         lab = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2LAB)
         L, A, B = cv2.split(lab)
-        clahe = cv2.createCLAHE(clipLimit=clip, tileGridSize=grid)
-        L2 = clahe.apply(L)
-        lab2 = cv2.merge([L2, A, B])
-        return cv2.cvtColor(lab2, cv2.COLOR_LAB2BGR)
+        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
+        L = clahe.apply(L)
+        return cv2.cvtColor(cv2.merge([L, A, B]), cv2.COLOR_LAB2BGR)
 
     @staticmethod
     def auto_gamma(gray):
-        """
-        Gamma automática (sin knobs): estabiliza escenas muy oscuras o muy claras.
-        """
-        if gray is None:
-            return None
-        m = float(np.mean(gray)) / 255.0
-        m = max(m, 1e-3)
-        gamma = np.clip(np.log(0.5) / np.log(m), 0.6, 1.6)
+        """Corrección gamma adaptativa."""
+        m = np.clip(np.mean(gray) / 255.0, 0.01, 0.99)
+        gamma = np.clip(np.log(0.5) / np.log(m), 0.5, 2.0)
         lut = np.array([((i / 255.0) ** gamma) * 255 for i in range(256)], dtype=np.uint8)
         return cv2.LUT(gray, lut)
 
     @staticmethod
-    def auto_denoise_gray(gray):
-        """
-        Denoise automático basado en varianza del Laplaciano (estimación simple).
-        """
-        if gray is None:
-            return None
-        v = cv2.Laplacian(gray, cv2.CV_64F).var()
+    def detect_green_screen(img_bgr):
+        """Detecta si la imagen tiene fondo verde (chroma key)."""
+        hsv = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2HSV)
+        lower_green = np.array([35, 50, 50])
+        upper_green = np.array([85, 255, 255])
+        mask = cv2.inRange(hsv, lower_green, upper_green)
+        green_ratio = np.sum(mask > 0) / mask.size
+        return green_ratio > 0.2
 
-        if v > 1200:
-            return cv2.GaussianBlur(gray, (5, 5), 0)
-        elif v > 400:
-            return cv2.medianBlur(gray, 3)
+    @staticmethod
+    def segment_green_screen(img_bgr):
+        """Segmenta objeto sobre fondo verde."""
+        hsv = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2HSV)
+        lower_green = np.array([35, 40, 40])
+        upper_green = np.array([85, 255, 255])
+        green_mask = cv2.inRange(hsv, lower_green, upper_green)
+        mask = cv2.bitwise_not(green_mask)
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=2)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel, iterations=1)
+        return mask
+
+    @staticmethod
+    def auto_segment(gray, img_bgr=None):
+        """
+        Segmentación adaptativa universal.
+        - Green screen → segmentación por color
+        - Fondo oscuro (<50) → objeto es lo claro
+        - Fondo claro (>200) → objeto es lo oscuro
+        - Ambiguo → minoría es el objeto
+        """
+        # Verificar green screen
+        if img_bgr is not None and UniversalPreprocessPipeline.detect_green_screen(img_bgr):
+            return UniversalPreprocessPipeline.segment_green_screen(img_bgr)
+        
+        # Segmentación por intensidad (Otsu)
+        blur = cv2.GaussianBlur(gray, (5, 5), 0)
+        _, binary = cv2.threshold(blur, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        
+        # Detectar tipo de fondo basado en los bordes de la imagen
+        h, w = blur.shape
+        border = np.concatenate([blur[0,:], blur[-1,:], blur[:,0], blur[:,-1]])
+        border_mean = np.mean(border)
+        
+        if border_mean < 50:
+            # Fondo oscuro (Fashion MNIST): objeto debe ser blanco (claro)
+            # Después de Otsu, lo claro ya es blanco → no invertir
+            pass
+        elif border_mean > 200:
+            # Fondo claro (Esperma): objeto debe ser blanco
+            # Después de Otsu, lo claro es blanco = fondo → invertir
+            binary = cv2.bitwise_not(binary)
         else:
-            return gray
+            # Ambiguo (padding u otro): usar lógica de minoría
+            if np.mean(binary) > 127:
+                binary = cv2.bitwise_not(binary)
+        
+        # Morfología
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+        binary = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel, iterations=2)
+        binary = cv2.morphologyEx(binary, cv2.MORPH_OPEN, kernel, iterations=1)
+        
+        # Rellenar contornos
+        contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        filled = np.zeros_like(binary)
+        cv2.drawContours(filled, contours, -1, 255, cv2.FILLED)
+        
+        return filled
 
-    @staticmethod
-    def mild_sharpen(gray):
+    def preprocess(self, img):
         """
-        Unsharp mask suave: evita kernels agresivos que inventan bordes.
-        """
-        if gray is None:
-            return None
-        blur = cv2.GaussianBlur(gray, (0, 0), 1.0)
-        return cv2.addWeighted(gray, 1.2, blur, -0.2, 0)
-
-    # -------------------------
-    # Edges automáticos
-    # -------------------------
-
-    @staticmethod
-    def auto_canny(gray):
-        """
-        Canny automático con umbrales por mediana.
-        """
-        if gray is None:
-            return None
-        g = cv2.GaussianBlur(gray, (3, 3), 0)
-        med = np.median(g)
-        sigma = 0.33
-        low = int(max(0, (1.0 - sigma) * med))
-        high = int(min(255, (1.0 + sigma) * med))
-        return cv2.Canny(g, low, high)
-
-    @staticmethod
-    def auto_morph(binary, out_size=(256, 256)):
-        """
-        Morfología automática basada en tamaño.
-        """
-        if binary is None:
-            return None
-        out_w, out_h = out_size
-        k = 3 if min(out_w, out_h) >= 128 else 2
-        kernel = np.ones((k, k), np.uint8)
-        x = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel, iterations=1)
-        x = cv2.morphologyEx(x, cv2.MORPH_OPEN, kernel, iterations=1)
-        return x
-
-    # -------------------------
-    # API principal
-    # -------------------------
-
-    def run(self, img):
-        """
-        Ejecuta el preprocesamiento universal y devuelve vistas.
+        Preprocesa imagen y retorna vistas.
+        
+        Returns:
+            dict con keys: canon_bgr, gray, mask
         """
         img_bgr = self._to_bgr(img)
         if img_bgr is None:
             return None
-
-        # 1) Canonical (forma fija sin distorsión)
-        canon = self.letterbox_resize(img_bgr, out_size=self.out_size)
-
-        # 2) Vista para embeddings / estabilidad global
-        canon_clahe = self.clahe_on_l_channel(canon)
+            
+        canon = self.letterbox_resize(img_bgr, self.out_size)
+        canon_clahe = self.clahe_bgr(canon)
         gray = self._to_gray(canon_clahe)
-        gray = self.auto_denoise_gray(gray)
         gray = self.auto_gamma(gray)
-        gray = self.mild_sharpen(gray)
-
-        # 3) Edges
-        edges = self.auto_canny(gray)
-        edges = self.auto_morph(edges, out_size=self.out_size)
+        mask = self.auto_segment(gray, canon)
 
         return {
-            "canon_bgr": canon,      # embedding-friendly
-            "gray": gray,            # HOG / SIFT / ORB
-            "edges": edges           # momentos / contornos
+            "canon_bgr": canon_clahe,
+            "gray": gray,
+            "mask": mask
         }
 
 
-class UniversalPreprocessPipeline:
-    """
-    Wrapper para que lo uses fácil desde tu backend.
-    """
-
-    def __init__(self, out_size=(256, 256)):
-        self.pre = ImagePreprocessor(out_size=out_size)
-
-    def preprocess(self, img):
-        """
-        Retorna vistas para tus extractores.
-        """
-        views = self.pre.run(img)
-        if views is None:
-            # consistente: si entra None, sale None
-            return None
-        return views
+# Alias para compatibilidad
+ImagePreprocessor = UniversalPreprocessPipeline

@@ -10,6 +10,7 @@ from app.core.config import settings
 from app.services.clustering.metricas import ClusteringMetrics
 from app.services.clustering.OnlineInverse import OnlineInverseWeightedSize
 from app.services.event_bus import JobEventBus
+from app.services.feature_extractors.embedding import EmbeddingExtractor
 from app.services.feature_extractors.hog import HOGExtractor
 from app.services.feature_extractors.moments import MomentsExtractor
 from app.services.feature_extractors.sift import SIFTExtractor
@@ -93,6 +94,8 @@ class JobManager:
             return SIFTExtractor(max_kp=128)
         if name == "moments":
             return MomentsExtractor()
+        if name == "embeddings" or name == "cnn":
+            return EmbeddingExtractor()
         raise ValueError("unknown_extractor")
 
     async def _process_single_image(self, key, extractor, semaphore):
@@ -246,7 +249,10 @@ class JobManager:
 
         img_bgr = decode_image_to_bgr(img_bytes)
 
-        views = preprocess(img_bgr)
+        if isinstance(extractor, EmbeddingExtractor):
+            views = {"canon_bgr": img_bgr}
+        else:
+            views = preprocess(img_bgr)
 
         feat = extract_features(views, extractor)
 

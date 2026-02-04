@@ -10,3 +10,10 @@ boto3
 sse-starlette
 pydantic
 pydantic-settings
+scipy
+scikit-image
+mahotas
+scikit-learn
+torch
+torchvision
+tqdm

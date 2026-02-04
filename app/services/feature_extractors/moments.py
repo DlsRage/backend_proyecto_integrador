@@ -12,22 +12,22 @@ class MomentsExtractor(FeatureExtractor):
     """
 
     def extract(self, views: dict) -> np.ndarray:
-        """Extrae momentos de Zernike de la vista de bordes preprocesada."""
-        # Usa la vista 'edges' que ya aplicó Canny y Morfología
-        edges = views["edges"]
+        """Extrae momentos de Zernike de la máscara segmentada."""
+        # Usa la vista 'mask' del preprocesador
+        mask = views["mask"]
 
         # Asegurar que sea una imagen en escala de grises
-        if len(edges.shape) == 3:
-            edges = cv2.cvtColor(edges, cv2.COLOR_BGR2GRAY)
+        if len(mask.shape) == 3:
+            mask = cv2.cvtColor(mask, cv2.COLOR_BGR2GRAY)
 
         # Convertir a uint8 si no lo está
-        if edges.dtype != np.uint8:
-            edges = edges.astype(np.uint8)
+        if mask.dtype != np.uint8:
+            mask = mask.astype(np.uint8)
 
         # Calcular momentos de Zernike
         try:
-            radius = min(edges.shape) // 2
-            zernike_moments = mahotas.features.zernike_moments(edges, radius=radius)
+            radius = min(mask.shape) // 2
+            zernike_moments = mahotas.features.zernike_moments(mask, radius=radius)
             return zernike_moments.astype(np.float32)
         except Exception as e:
             print(f"Error calculando Zernike: {e}")

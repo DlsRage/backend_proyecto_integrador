@@ -3,6 +3,7 @@ from skimage.feature import hog
 
 from app.services.feature_extractors.base import FeatureExtractor
 
+
 class HOGExtractor(FeatureExtractor):
     def extract(self, views: dict) -> np.ndarray:
         """Extrae características HOG de la vista preprocesada."""
