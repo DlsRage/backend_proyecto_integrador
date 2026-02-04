@@ -230,6 +230,8 @@ class JobManager:
                     "centroids": clusterer.centroids.tolist(),
                 },
             )
+            # Guardar el clusterer en el job para uso incremental
+            job.clusterer = clusterer
 
             job.status = "done"
             await self.bus.publish(job_id, {"type": "status", "status": "done"})
@@ -262,3 +264,76 @@ class JobManager:
         normalized = (feat / denom).ravel()
 
         return normalized
+
+    def get_incremental_state(self, job_id: str) -> dict:
+        """
+        Obtiene el estado de los centroides de un job para usar en clustering incremental.
+        """
+        job = self.get_job(job_id)
+
+        if job.status != "done":
+            raise ValueError("job_not_completed")
+
+        if not hasattr(job, "clusterer") or job.clusterer is None:
+            raise ValueError("no_clusterer_available")
+
+        return {
+            "centroids": job.clusterer.centroids.tolist(),
+            "cluster_sizes": job.clusterer.sizes.tolist(),
+            "n_clusters": job.n_clusters,
+            "extractor": job.extractor,
+        }
+
+    async def process_incremental_image(
+        self, image_bytes: bytes, image_key: str, base_job_id: Optional[str] = None
+    ) -> dict:
+        """
+        Procesa una imagen nueva usando clustering incremental.
+
+        Args:
+            image_bytes: Bytes de la imagen
+            image_key: Key donde se guardó la imagen en S3
+            base_job_id: ID del job base para obtener centroides y configuración
+
+        Returns:
+            Dict con cluster asignado, centroides actualizados y tamaños
+        """
+        # Si hay un job base, cargar su estado
+        if base_job_id:
+            try:
+                base_job = self.get_job(base_job_id)
+
+                # Asegurarse de que el job tiene un clusterer guardado
+                if not hasattr(base_job, "clusterer") or base_job.clusterer is None:
+                    raise ValueError("El job base no tiene un clusterer disponible")
+
+                clusterer = base_job.clusterer
+                extractor_name = base_job.extractor
+
+            except KeyError:
+                raise ValueError(f"Job base {base_job_id} no encontrado")
+        else:
+            raise ValueError("Se requiere un job_id base para clustering incremental")
+
+        # Crear el extractor apropiado
+        extractor = self._make_extractor(extractor_name)
+
+        # Extraer features de la nueva imagen
+        try:
+            feat = await asyncio.to_thread(self._extract_one, image_bytes, extractor)
+            feat = np.nan_to_num(feat)
+        except Exception as e:
+            raise ValueError(f"Error extrayendo features: {str(e)}")
+
+        # Clasificar la imagen con el clusterer existente
+        try:
+            assigned_cluster = clusterer.partial_fit(feat)
+        except Exception as e:
+            raise ValueError(f"Error en clustering: {str(e)}")
+
+        # Retornar resultados
+        return {
+            "assigned_cluster": int(assigned_cluster),
+            "centroids": clusterer.centroids.tolist(),
+            "cluster_sizes": clusterer.sizes.tolist(),
+        }
