@@ -22,7 +22,7 @@ def preprocess(image_bgr: np.ndarray) -> dict:
     Preprocesa la imagen y devuelve vistas múltiples.
     
     Returns:
-        dict con keys: canon_bgr, gray, edges, is_degenerate
+        dict con keys: canon_bgr, gray, mask
         o None si la imagen es inválida
     """
     views = _preprocessor.preprocess(image_bgr)
@@ -34,10 +34,11 @@ def extract_features(views: dict, extractor: FeatureExtractor) -> np.ndarray:
     Extrae características usando las vistas preprocesadas.
     
     Args:
-        views: dict con vistas del preprocesador (canon_bgr, gray, edges)
+        views: dict con vistas del preprocesador (canon_bgr, gray, mask)
         extractor: instancia de FeatureExtractor
     
     Returns:
         Vector de características 1D
     """
     return extractor.extract(views)
+
