@@ -1,0 +1,1 @@
+run: git push --force https://josue-p13:$HF_TOKEN@huggingface.co/spaces/josue-p13/back_clustering_online main
