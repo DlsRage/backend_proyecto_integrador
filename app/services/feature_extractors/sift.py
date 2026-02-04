@@ -13,10 +13,16 @@ class SIFTExtractor(FeatureExtractor):
         if desc is None:
             return np.zeros((self.max_kp * 128,), dtype=np.float32)
 
+<<<<<<< Updated upstream
         desc = desc[: self.max_kp]  # recorta
         # padding para vector de tamaño fijo
         if desc.shape[0] < self.max_kp:
             pad = np.zeros((self.max_kp - desc.shape[0], 128), dtype=desc.dtype)
             desc = np.vstack([desc, pad])
+=======
+        # si no hay keypoints → vector cero (128D = dimensión SIFT estándar)
+        if desc is None or len(desc) == 0:
+            return np.zeros(128, dtype=np.float32)
+>>>>>>> Stashed changes
 
         return desc.reshape(-1).astype(np.float32)
