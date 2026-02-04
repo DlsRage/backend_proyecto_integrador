@@ -55,12 +55,13 @@ class ClusteringMetrics:
         results = {}
 
         if len(np.unique(labels)) > 1:
-            results["silhouette"] = silhouette_score(X, labels)
-            results["dunn"] = ClusteringMetrics.dunn_index(X, labels)
+            results["silhouette"] = float(silhouette_score(X, labels))
+            results["dunn"] = float(ClusteringMetrics.dunn_index(X, labels))
 
         if y_true is not None:
-            results["nmi"] = normalized_mutual_info_score(y_true, labels)
-            results["ari"] = adjusted_rand_score(y_true, labels)
-            results["ami"] = adjusted_mutual_info_score(y_true, labels)
+            results["nmi"] = float(normalized_mutual_info_score(y_true, labels))
+            results["ari"] = float(adjusted_rand_score(y_true, labels))
+            results["ami"] = float(adjusted_mutual_info_score(y_true, labels))
 
         return results
+

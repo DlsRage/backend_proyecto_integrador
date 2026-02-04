@@ -105,10 +105,6 @@ class JobManager:
                     asyncio.to_thread(self._extract_one, img_bytes, extractor),
                     timeout=30.0,
                 )
-                # 🔍 Agregar esto:
-                print(
-                    f"🔍 feat: type={type(feat)}, shape={getattr(feat, 'shape', 'no shape')}, len={len(feat) if hasattr(feat, '__len__') else 'no len'}"
-                )
                 return feat
             except asyncio.TimeoutError:
                 print(f"❌ Timeout processing image {key}")
@@ -153,7 +149,6 @@ class JobManager:
 
             for i, key in enumerate(keys):
                 feat = await self._process_single_image(key, extractor, semaphore)
-
                 if feat is None:
                     continue
 
@@ -174,7 +169,7 @@ class JobManager:
                                 {
                                     "type": "image_label",
                                     "image_key": key,
-                                    "cluster": res_buf,
+                                    "cluster": int(res_buf),
                                 },
                             )
                             all_labels.append(res_buf)
@@ -182,12 +177,13 @@ class JobManager:
                     continue  # Pasamos al siguiente x del flujo X
 
                 respuesta = clusterer.partial_fit(feat)
+                all_labels.append(res_buf)
                 await self.bus.publish(
                     job_id,
                     {
                         "type": "image_label",
                         "image_key": key,
-                        "cluster": respuesta,
+                        "cluster": int(respuesta),
                     },
                 )
 
@@ -233,26 +229,17 @@ class JobManager:
             )
 
     def _extract_one(self, img_bytes: bytes, extractor) -> np.ndarray:
-        print(f"🔍 1. img_bytes length: {len(img_bytes)}")
 
         img_bgr = decode_image_to_bgr(img_bytes)
-        print(f"🔍 2. img_bgr.shape: {img_bgr.shape}")
+
 
         views = preprocess(img_bgr)
-        print(f"🔍 3. views type: {type(views)}")
-        print(
-            f"🔍 3. views keys: {views.keys() if isinstance(views, dict) else 'Not a dict'}"
-        )
 
         feat = extract_features(views, extractor)
-        print(f"🔍 4. feat.shape ANTES de normalizar: {feat.shape}")
-        print(f"🔍 4. feat.dtype: {feat.dtype}")
 
         feat = feat.astype(np.float32)
         denom = np.linalg.norm(feat) + 1e-8
-        print(f"🔍 5. denom (norma): {denom}")
 
         normalized = (feat / denom).ravel()
-        print(f"🔍 6. normalized.shape FINAL: {normalized.shape}")
 
         return normalized

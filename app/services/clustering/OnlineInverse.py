@@ -1,5 +1,5 @@
 import numpy as np
-
+from sklearn.decomposition import PCA
 
 class OnlineInverseWeightedSize:
     def __init__(self, k=3, learning_rate=0.1, max_size=(30, 30, 30), seed=0, p=2):
@@ -76,3 +76,22 @@ class OnlineInverseWeightedSize:
         self.sizes[j] += 1
 
         return j
+    
+    def get_centroids_2d(self):
+        """
+        Devuelve centroides proyectados a 2D usando PCA.
+        Útil para visualización cuando tienes 128 features o más.
+
+        return shape: (k, 2)
+        """
+
+        if self.centroids is None:
+            return None
+
+        if self.centroids.shape[1] <= 2:
+            return self.centroids.copy()
+
+        pca = PCA(n_components=2)
+        centroids_2d = pca.fit_transform(self.centroids)
+
+        return centroids_2d
