@@ -146,8 +146,8 @@ class JobManager:
 
     def _extract_one(self, img_bytes: bytes, extractor) -> np.ndarray:
         img_bgr = decode_image_to_bgr(img_bytes)
-        img_bgr = preprocess(img_bgr)
-        feat = extract_features(img_bgr, extractor)
+        views = preprocess(img_bgr)
+        feat = extract_features(views, extractor)
         # normaliza para estabilidad numérica
         feat = feat.astype(np.float32)
         denom = (np.linalg.norm(feat) + 1e-8)

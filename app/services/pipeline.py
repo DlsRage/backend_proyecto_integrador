@@ -4,17 +4,40 @@ from PIL import Image
 import io
 
 from app.services.feature_extractors.base import FeatureExtractor
+from app.services.preprocessing.preprocessor import UniversalPreprocessPipeline
+
+# Instancia global del preprocesador
+_preprocessor = UniversalPreprocessPipeline(out_size=(256, 256))
+
 
 def decode_image_to_bgr(image_bytes: bytes) -> np.ndarray:
-    # PIL -> RGB -> OpenCV BGR
+    """Decodifica bytes de imagen a formato BGR de OpenCV."""
     img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
     arr = np.array(img)
     return arr[:, :, ::-1].copy()
 
-def preprocess(image_bgr: np.ndarray) -> np.ndarray:
-    # Aquí metes tu “limpieza de ruido” real.
-    # Demo: resize para control de RAM/tiempo.
-    return cv2.resize(image_bgr, (256, 256), interpolation=cv2.INTER_AREA)
 
-def extract_features(image_bgr: np.ndarray, extractor: FeatureExtractor) -> np.ndarray:
-    return extractor.extract(image_bgr)
+def preprocess(image_bgr: np.ndarray) -> dict:
+    """
+    Preprocesa la imagen y devuelve vistas múltiples.
+    
+    Returns:
+        dict con keys: canon_bgr, gray, edges, is_degenerate
+        o None si la imagen es inválida
+    """
+    views = _preprocessor.preprocess(image_bgr)
+    return views
+
+
+def extract_features(views: dict, extractor: FeatureExtractor) -> np.ndarray:
+    """
+    Extrae características usando las vistas preprocesadas.
+    
+    Args:
+        views: dict con vistas del preprocesador (canon_bgr, gray, edges)
+        extractor: instancia de FeatureExtractor
+    
+    Returns:
+        Vector de características 1D
+    """
+    return extractor.extract(views)
