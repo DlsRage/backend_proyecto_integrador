@@ -94,26 +94,36 @@ class UniversalPreprocessPipeline:
     def auto_segment(gray, img_bgr=None):
         """
         Segmentación adaptativa universal.
-        - Detecta green screen y lo procesa por color
-        - Para otras imágenes usa Otsu adaptativo
+        - Green screen → segmentación por color
+        - Fondo oscuro (<50) → objeto es lo claro
+        - Fondo claro (>200) → objeto es lo oscuro
+        - Ambiguo → minoría es el objeto
         """
         # Verificar green screen
         if img_bgr is not None and UniversalPreprocessPipeline.detect_green_screen(img_bgr):
             return UniversalPreprocessPipeline.segment_green_screen(img_bgr)
         
-        # Segmentación por intensidad
+        # Segmentación por intensidad (Otsu)
         blur = cv2.GaussianBlur(gray, (5, 5), 0)
+        _, binary = cv2.threshold(blur, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
         
-        # Detectar si fondo es claro u oscuro
+        # Detectar tipo de fondo basado en los bordes de la imagen
         h, w = blur.shape
         border = np.concatenate([blur[0,:], blur[-1,:], blur[:,0], blur[:,-1]])
-        bg_mean = np.mean(border)
-        center_mean = np.mean(blur[h//4:3*h//4, w//4:3*w//4])
+        border_mean = np.mean(border)
         
-        if bg_mean > center_mean:
-            _, binary = cv2.threshold(blur, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+        if border_mean < 50:
+            # Fondo oscuro (Fashion MNIST): objeto debe ser blanco (claro)
+            # Después de Otsu, lo claro ya es blanco → no invertir
+            pass
+        elif border_mean > 200:
+            # Fondo claro (Esperma): objeto debe ser blanco
+            # Después de Otsu, lo claro es blanco = fondo → invertir
+            binary = cv2.bitwise_not(binary)
         else:
-            _, binary = cv2.threshold(blur, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+            # Ambiguo (padding u otro): usar lógica de minoría
+            if np.mean(binary) > 127:
+                binary = cv2.bitwise_not(binary)
         
         # Morfología
         kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
