@@ -1,19 +1,16 @@
 import asyncio
-import json
-import os
 import uuid
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
 import numpy as np
 from app.core.config import settings
-from app.services.clustering.InverseKmeans import OnlineInverseWeightedKMeans
 from app.services.clustering.metricas import ClusteringMetrics
+from app.services.clustering.OnlineInverse import OnlineInverseWeightedSize
 from app.services.event_bus import JobEventBus
 from app.services.feature_extractors.hog import HOGExtractor
 from app.services.feature_extractors.moments import MomentsExtractor
 from app.services.feature_extractors.sift import SIFTExtractor
-from app.services.metrics import calculate_metrics, project_centroids_to_2d
 from app.services.pipeline import decode_image_to_bgr, extract_features, preprocess
 from app.services.storage import StorageService
 
@@ -22,6 +19,7 @@ from app.services.storage import StorageService
 class Job:
     id: str
     created_at: float
+    cluster_sizes: List[int]
     image_keys: List[str] = field(default_factory=list)
     status: str = "created"  # created | running | done | failed | cancelled
     result: Optional[Dict[str, Any]] = None
@@ -44,9 +42,9 @@ class JobManager:
         extractor: str,
         n_clusters: int,
         learning_rate: float,
+        cluster_sizes: List[int],
         p: int,
         random_state: Optional[int],
-        auto_delete: bool,
     ) -> Job:
         job_id = str(uuid.uuid4())
         job = Job(
@@ -54,10 +52,10 @@ class JobManager:
             created_at=asyncio.get_event_loop().time(),
             extractor=extractor,
             n_clusters=n_clusters,
+            cluster_sizes=cluster_sizes,
             learning_rate=learning_rate,
             p=p,
             random_state=random_state,
-            auto_delete=auto_delete,
         )
         self.jobs[job_id] = job
         self.bus.ensure(job_id)
@@ -72,7 +70,6 @@ class JobManager:
         job = self.get_job(job_id)
         job.image_keys.extend(keys)
         # orden estable => resultados más reproducibles
-        job.image_keys = sorted(set(job.image_keys))
 
     async def start(self, job_id: str) -> None:
         job = self.get_job(job_id)
@@ -93,15 +90,6 @@ class JobManager:
             return MomentsExtractor()
         raise ValueError("unknown_extractor")
 
-    async def _process_image_batch(self, keys, extractor, semaphore):
-        """
-        Procesa un lote de imágenes en paralelo limitado por semáforo.
-        """
-        tasks = []
-        for idx, key in enumerate(keys):
-            tasks.append(self._process_single_image(key, extractor, semaphore))
-        return await asyncio.gather(*tasks)
-
     async def _process_single_image(self, key, extractor, semaphore):
         async with semaphore:
             try:
@@ -116,6 +104,10 @@ class JobManager:
                 feat = await asyncio.wait_for(
                     asyncio.to_thread(self._extract_one, img_bytes, extractor),
                     timeout=30.0,
+                )
+                # 🔍 Agregar esto:
+                print(
+                    f"🔍 feat: type={type(feat)}, shape={getattr(feat, 'shape', 'no shape')}, len={len(feat) if hasattr(feat, '__len__') else 'no len'}"
                 )
                 return feat
             except asyncio.TimeoutError:
@@ -137,11 +129,12 @@ class JobManager:
                 else settings.RANDOM_SEED
             )
 
-            clusterer = OnlineInverseWeightedKMeans(
-                n_clusters=job.n_clusters,
+            clusterer = OnlineInverseWeightedSize(
+                k=job.n_clusters,
                 learning_rate=job.learning_rate,
                 p=job.p,
-                random_state=random_seed,
+                seed=random_seed,
+                max_size=job.cluster_sizes,
             )
 
             keys = job.image_keys
@@ -151,54 +144,73 @@ class JobManager:
 
             # Recolectar todas las características en paralelo
             # Limitamos la concurrencia a 10 para no saturar CPU/Red
-            chunk_size = max(1, total // 10)  # evitar 0
-            semaphore = asyncio.Semaphore(10)
+            chunk_size = total // 10  # evitar 0
+            semaphore = asyncio.Semaphore(1)
 
             all_feats = []
-            global_feats = []
-            global_labels = []
+            all_labels = []
+            buffer = []
 
-            for i in range(0, total, chunk_size):
-                batch_keys = keys[i : i + chunk_size]
+            for i, key in enumerate(keys):
+                feat = await self._process_single_image(key, extractor, semaphore)
 
-                feats = await self._process_image_batch(
-                    batch_keys, extractor, semaphore
-                )
-
-                if not feats:
+                if feat is None:
                     continue
 
-                all_feats.extend(feats)
+                feat = np.nan_to_num(feat)
+                all_feats.append(feat)
 
-                # ===============================
-                # CLUSTERING DEL CHUNK
-                # ===============================
-                X = np.vstack(all_feats)
-                X = np.nan_to_num(X)
+                if clusterer.centroids is None:
+                    clusterer.partial_fit(feat)
+                    buffer.append(feat)
 
-                labels = clusterer.fit_predict(X)
+                    # 2. Justo cuando se llena el buffer (k+1), lo vaciamos y clasificamos
+                    if len(buffer) == job.n_clusters + 1:
+                        for x_buf in buffer:
+                            # Ahora partial_fit ya no devolverá -1 porque centroids ya existe
+                            res_buf = clusterer.partial_fit(x_buf)
+                            await self.bus.publish(
+                                job_id,
+                                {
+                                    "type": "image_label",
+                                    "image_key": key,
+                                    "cluster": res_buf,
+                                },
+                            )
+                            all_labels.append(res_buf)
+                        buffer = []  # Vaciamos para no volver a entrar aquí
+                    continue  # Pasamos al siguiente x del flujo X
 
-                global_feats.append(X)
-                global_labels.append(labels)
-
-                metrics = ClusteringMetrics.evaluate(X, labels)
-
+                respuesta = clusterer.partial_fit(feat)
                 await self.bus.publish(
                     job_id,
                     {
-                        "type": "metrics",
-                        "iteration": i + len(batch_keys),
-                        "metrics": metrics,
-                        "centroids": clusterer.get_centroids_2d().tolist(),
+                        "type": "image_label",
+                        "image_key": key,
+                        "cluster": respuesta,
                     },
                 )
 
-                all_feats = []  # 🔥 liberar memoria
+                # métricas online cada N
+                if (i + 1) % chunk_size == 0:
+                    X = np.vstack(all_feats)
+                    labels = np.array(all_labels)
 
-            X_all = np.vstack(global_feats)
-            labels_all = np.concatenate(global_labels)
+                    metrics = ClusteringMetrics.evaluate(X, labels)
 
-            final_metrics = ClusteringMetrics.evaluate(X_all, labels_all)
+                    await self.bus.publish(
+                        job_id,
+                        {
+                            "type": "metrics",
+                            "iteration": i + 1,
+                            "metrics": metrics,
+                            "centroids": clusterer.get_centroids_2d().tolist(),
+                        },
+                    )
+            X = np.vstack(all_feats)
+            labels = np.array(all_labels)
+
+            final_metrics = ClusteringMetrics.evaluate(X, labels)
 
             await self.bus.publish(
                 job_id,
@@ -221,10 +233,26 @@ class JobManager:
             )
 
     def _extract_one(self, img_bytes: bytes, extractor) -> np.ndarray:
+        print(f"🔍 1. img_bytes length: {len(img_bytes)}")
+
         img_bgr = decode_image_to_bgr(img_bytes)
-        views = preprocess(img_bgr)  # Ahora devuelve dict de vistas
+        print(f"🔍 2. img_bgr.shape: {img_bgr.shape}")
+
+        views = preprocess(img_bgr)
+        print(f"🔍 3. views type: {type(views)}")
+        print(
+            f"🔍 3. views keys: {views.keys() if isinstance(views, dict) else 'Not a dict'}"
+        )
+
         feat = extract_features(views, extractor)
-        # normaliza para estabilidad numérica
+        print(f"🔍 4. feat.shape ANTES de normalizar: {feat.shape}")
+        print(f"🔍 4. feat.dtype: {feat.dtype}")
+
         feat = feat.astype(np.float32)
         denom = np.linalg.norm(feat) + 1e-8
-        return (feat / denom).reshape(1, -1)
+        print(f"🔍 5. denom (norma): {denom}")
+
+        normalized = (feat / denom).ravel()
+        print(f"🔍 6. normalized.shape FINAL: {normalized.shape}")
+
+        return normalized

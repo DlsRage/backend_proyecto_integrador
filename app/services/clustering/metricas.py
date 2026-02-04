@@ -57,8 +57,6 @@ class ClusteringMetrics:
         if len(np.unique(labels)) > 1:
             results["silhouette"] = silhouette_score(X, labels)
             results["dunn"] = ClusteringMetrics.dunn_index(X, labels)
-            results["calinski_harabasz"] = calinski_harabasz_score(X, labels)
-            results["davies_bouldin"] = davies_bouldin_score(X, labels)
 
         if y_true is not None:
             results["nmi"] = normalized_mutual_info_score(y_true, labels)
