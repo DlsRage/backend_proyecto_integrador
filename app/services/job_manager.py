@@ -1,4 +1,6 @@
 import asyncio
+import os
+import random
 import uuid
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
@@ -68,8 +70,11 @@ class JobManager:
 
     def register_images(self, job_id: str, keys: List[str]) -> None:
         job = self.get_job(job_id)
+
         job.image_keys.extend(keys)
-        # orden estable => resultados más reproducibles
+
+        # randomizar
+        random.shuffle(job.image_keys)
 
     async def start(self, job_id: str) -> None:
         job = self.get_job(job_id)
@@ -142,7 +147,7 @@ class JobManager:
             # Limitamos la concurrencia a 10 para no saturar CPU/Red
             chunk_size = total // 10  # evitar 0
             semaphore = asyncio.Semaphore(1)
-
+            buffer_key = []
             all_feats = []
             all_labels = []
             buffer = []
@@ -155,20 +160,26 @@ class JobManager:
                 feat = np.nan_to_num(feat)
                 all_feats.append(feat)
 
+                # Extraer solo el nombre del archivo con extensión
+                filename = os.path.basename(key)
+
                 if clusterer.centroids is None:
                     clusterer.partial_fit(feat)
                     buffer.append(feat)
+                    buffer_key.append(filename)
 
                     # 2. Justo cuando se llena el buffer (k+1), lo vaciamos y clasificamos
-                    if len(buffer) == job.n_clusters + 1:
-                        for x_buf in buffer:
+                    if len(buffer) == job.n_clusters:
+                        for key_buf, x_buf in enumerate(buffer, start=0):
                             # Ahora partial_fit ya no devolverá -1 porque centroids ya existe
                             res_buf = clusterer.partial_fit(x_buf)
                             await self.bus.publish(
                                 job_id,
                                 {
                                     "type": "image_label",
-                                    "image_key": key,
+                                    "image_key": buffer_key[
+                                        key_buf
+                                    ],  # Solo nombre del archivo
                                     "cluster": int(res_buf),
                                 },
                             )
@@ -177,12 +188,12 @@ class JobManager:
                     continue  # Pasamos al siguiente x del flujo X
 
                 respuesta = clusterer.partial_fit(feat)
-                all_labels.append(res_buf)
+                all_labels.append(respuesta)
                 await self.bus.publish(
                     job_id,
                     {
                         "type": "image_label",
-                        "image_key": key,
+                        "image_key": filename,  # Solo nombre del archivo
                         "cluster": int(respuesta),
                     },
                 )
@@ -217,6 +228,9 @@ class JobManager:
                 },
             )
 
+            job.status = "done"
+            await self.bus.publish(job_id, {"type": "status", "status": "done"})
+
         except Exception as e:
             import traceback
 
@@ -231,7 +245,6 @@ class JobManager:
     def _extract_one(self, img_bytes: bytes, extractor) -> np.ndarray:
 
         img_bgr = decode_image_to_bgr(img_bytes)
-
 
         views = preprocess(img_bgr)
 

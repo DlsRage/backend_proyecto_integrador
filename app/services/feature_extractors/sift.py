@@ -4,7 +4,7 @@ from app.services.feature_extractors.base import FeatureExtractor
 
 
 class SIFTExtractor(FeatureExtractor):
-    def __init__(self, max_kp: int = 128):
+    def __init__(self, max_kp: int = 64):
         self.sift = cv2.SIFT_create()
         self.max_kp = max_kp
 
@@ -17,9 +17,9 @@ class SIFTExtractor(FeatureExtractor):
 
         # si no hay keypoints → vector cero
         if desc is None or len(desc) == 0:
-            return np.zeros(128, dtype=np.float32)
+            return np.zeros(64, dtype=np.float32)
 
-        # 🔥 promedio → 128D fijo
+        # 🔥 promedio → 64D fijo
         feat = desc.mean(axis=0)
 
         return feat.reshape(-1).astype(np.float32)
